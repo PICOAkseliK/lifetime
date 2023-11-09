@@ -1,0 +1,34 @@
+pd arvojen histogrammi
+std
+avg
+liikkuva keskiarvo
+
+
+
+
+kaks log file / laser
+tallennuksen aloitusaika
+pd target
+device name
+set values
+
+
+
+log tiheys
+	-dynaaminen
+	-tiheä/harva
+		-määrätty, sini, joku muu?
+	-tasainen
+	-keskiarvoistettu tasainen
+
+
+nacki
+	-lähetä käsky uusiks
+	-näytä counter/prompti
+	-timeout 2-5, yritä uudelleen
+	-timeout 50ms 5 kertaa yritä uusiks
+	
+tyhjennä tarvittaessa bufferi
+tsekkaa onko timeoutteja
+
+kun annetaan laseri, annetaan verrokkitehoarvo, sitä vastaava photodiodiarvo
