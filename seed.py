@@ -11,6 +11,7 @@ from threading import Lock
 import gc
 from itertools import cycle
 from bitarray import bitarray
+import pandas
 
 AMOUNT_TIME_DATA = 12*10**4
 COMM_ERR = 0
@@ -38,7 +39,6 @@ class Seed(QObject):
     startValues = Signal(int, int)
 
 
-
     def __init__(self, stop_signal: Signal, delete_signal: Signal, seed_connected: Signal,
                  ready_to_start: Signal):
         super(Seed, self).__init__()
@@ -46,6 +46,8 @@ class Seed(QObject):
         self.seed_name = ""
         self.chip_name = ""
         self.log_file_location = ""
+        self.log_file = ""
+        self.power_file = ""
         self.log_period = 0.5
         self.target_log_time_hours = 10000
         self.seed_ref_power = DEFAULT_POWER
@@ -59,13 +61,13 @@ class Seed(QObject):
        # self.write_log_header()
         self.driver: Optional[Driver] = None
         self.driver_serial_number = ""
-        self.pd_histogram = np.zeros(2**16)
+        self.pd_histogram = np.zeros(2**16, dtype=np.uint32)
         self.pd_min, self.pd_max = np.inf, -np.inf
 
-        self.pd_freq_histogram = np.zeros(2**16)
+        self.pd_freq_histogram = np.zeros(2**16, dtype=np.uint32)
         self.pd_freq_min, self.pd_freq_max = np.inf, -np.inf
 
-        self.pulse_current_histogram = np.zeros(2**16)
+        self.pulse_current_histogram = np.zeros(2**16, dtype=np.uint32)
         self.pulse_current_min, self.pulse_current_max = np.inf, -np.inf
 
         self.start_offset = 0
@@ -87,6 +89,9 @@ class Seed(QObject):
         self.time_data_pd_freq_set_current = np.empty((AMOUNT_TIME_DATA, 2), dtype=np.uint16)
         self.time_data_time = np.empty(AMOUNT_TIME_DATA, dtype=np.int32)
 
+        self.measured_powers = np.empty((300, 2), dtype=np.int32)
+        self.power_index = 0
+
         self.time_data_index = 0
 
         self.time_data_interval = self.target_log_time_hours*3600/AMOUNT_TIME_DATA
@@ -101,6 +106,59 @@ class Seed(QObject):
         self.cyclic = cycle(self.error_indices)
 
         self.driver_lock = Lock()
+
+        self.continued_run = False
+
+    def read_log_file(self, log_file):
+        try:
+            np_df = pandas.read_csv(log_file, header=1, dtype=np.float64, sep=";").to_numpy()
+            np_df[:, 2] = np_df[:, 2] * 100
+            np_df[:, 3] = np_df[:, 3] * 1000
+
+            np_df = np_df.astype(np.int32)
+            for a_ind, hist in enumerate([self.pd_histogram, self.pd_freq_histogram, self.pulse_current_histogram], start=1):
+                minim, maxim = np.min(np_df[:, a_ind]), np.max(np_df[:, a_ind])
+                count, division = np.histogram(np_df[:, a_ind], bins=max(int(maxim-minim), 1))
+                division = division.astype(np.uint32)
+
+                for c_ind, c in enumerate(count):
+                    if a_ind == 1:
+                        hist[division[c_ind]+2**15] = c
+                    else:
+                        hist[division[c_ind]] = c
+
+
+            return True
+        except (ValueError, IndexError):
+            return False
+
+    def read_power_file(self, power_file):
+        try:
+            self.power_file = power_file
+            np_df = pandas.read_csv(self.power_file, header=1, dtype=np.float64, sep=",").to_numpy()
+            np_df[:, 1] = np_df[:, 1] * 10
+            np_df = np_df.astype(np.int32)
+            self.measured_powers[np_df.shape[0], :] = np_df
+            self.power_index = np_df.shape[0]
+        except (ValueError, IndexError) :
+            self.power_file = ""
+            self.power_index = 0
+
+    def create_power_file(self):
+        if self.continued_run:
+            self.power_file = self.log_file[:-4] + "_power.txt"
+        else:
+            power_file_name = self.log_file_name[:-4] + "_power.txt"
+            self.power_file = path.join(self.log_file_location, power_file_name)
+        with open(self.power_file, "w") as f:
+            f.write("Start: " + datetime.fromtimestamp(self.log_start_time).strftime("%Y/%m/%d %H:%M:%S") + "\n")
+            f.write("Time (s), Power (mW)\n")
+
+    def add_power_measurement(self, power: float):
+        if self.power_file == "":
+            self.create_power_file()
+        with open(self.power_file, "a") as f:
+            f.write(str(int(round(time.time() - self.log_start_time))) + ", " + str(power) + "\n")
 
     def target_freq_changed(self, freq_khz: float):
         self.seed_target_freq = int(freq_khz*1000)
@@ -159,7 +217,21 @@ class Seed(QObject):
 
     def log_file_location_changed(self, log_location: str):
         self.log_file_location = log_location
+        self.log_file = ""
         self.check_ready_to_start()
+
+    def log_file_changed(self, log_file: str):
+        if log_file and self.read_log_file(log_file):
+            self.log_file = log_file
+            self.log_file_location = path.dirname(log_file)
+            self.check_ready_to_start()
+            return True
+        else:
+            self.log_file = ""
+            self.log_file_location = ""
+            self.check_ready_to_start()
+            return False
+
 
     def log_period_changed(self, log_period: int):
         self.log_period = log_period
@@ -179,7 +251,8 @@ class Seed(QObject):
         self.check_ready_to_start()
 
     def check_ready_to_start(self):
-        if self.seed_name and self.chip_name and path.isdir(self.log_file_location) and self.driver is not None:
+        if (self.seed_name and self.chip_name and (path.isdir(self.log_file_location) or path.isfile(self.log_file))
+                and self.driver is not None):
             self.ready_to_start.emit(True)
         else:
             self.ready_to_start.emit(False)
@@ -228,16 +301,29 @@ class Seed(QObject):
         self.driver = None
 
     def write_log_header(self):
-        self.log_start_time = time.time()
-        now = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        self.log_start_time = round(time.time(), 1)
+        now = datetime.now()
+        now_text = now.strftime("%Y/%m/%d %H:%M:%S")
+        now = now.strftime("%Y_%m_%d_%H_%M_%S")
+
         self.log_file_name = "_".join([now, self.seed_name, self.chip_name, "lifetime.txt"])
         with open(path.join(self.log_file_location, self.log_file_name), "w") as f:
+            f.write("Start time: " + now_text + "\n")
             f.write(";".join(["Time (s)", "PD2 Value (uA)", "PD2 Freq (kHz)", "Pulse Driver Set Current (A)"]) + "\n")
 
     def log_data(self, pd2: int, pd2_freq: float, pulse_set_current: float):
-        with open(path.join(self.log_file_location, self.log_file_name), "a") as f:
-            f.write(";".join([str(round(self.last_log-self.log_start_time, 1)),
-                              str(pd2), str(pd2_freq/100), str(pulse_set_current/1000)]) + "\n")
+        try:
+            if self.continued_run:
+                with open(self.log_file, "a") as f:
+                    f.write(";".join([str(round(self.last_log-self.log_start_time, 1)),
+                                      str(pd2), str(pd2_freq/100), str(pulse_set_current/1000)]) + "\n")
+            else:
+                with open(path.join(self.log_file_location, self.log_file_name), "a") as f:
+                    f.write(";".join([str(round(self.last_log-self.log_start_time, 1)),
+                                      str(pd2), str(pd2_freq/100), str(pulse_set_current/1000)]) + "\n")
+        except (PermissionError, FileNotFoundError):
+            pass
+        # TODO HANDLE ERROR
 
     async def get_data(self):
         if not self.driver_lock.locked():

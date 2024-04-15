@@ -7,7 +7,7 @@ from lifetime_ui import Ui_MainWindow
 from PySide6.QtCore import Signal, QTimer, QRectF
 import pyqtgraph as pg
 from PySide6.QtWidgets import (QMainWindow, QLineEdit, QPushButton, QLabel, QTableWidgetItem, QDialog, QGridLayout,
-                               QDialogButtonBox, QCheckBox)
+                               QDialogButtonBox, QCheckBox, QAbstractSpinBox)
 from seed import Seed, DEFAULT_POWER, DEFAULT_WAVELENGTH, DEFAULT_PD, DEFAULT_FREQ_KHZ
 from tkinter import Tk
 from tkinter.filedialog import askopenfilename, askdirectory
@@ -125,7 +125,31 @@ class Lifetime(QMainWindow):
         self.delete_seed_timer = QTimer()
         self.delete_seed_timer.timeout.connect(self.delete_seed)
 
-        self.start_seed()
+
+        self.ui.dsboxMeasuredPower.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.ui.dsboxMeasuredPower.setSuffix(" mW")
+        self.ui.dsboxMeasuredPower.setDecimals(2)
+        self.ui.dsboxMeasuredPower.setMaximum(99999)
+
+        self.ui.dsboxMeasuredPower.wheelEvent = lambda value: None
+
+        #self.start_seed()
+
+        self.ui.radioNewLog.clicked.connect(self.run_type_changed)
+        self.ui.radioContinueLog.clicked.connect(self.run_type_changed)
+
+    def run_type_changed(self):
+        self.ui.leditLogLocation.clear()
+        if self.ui.radioNewLog.isChecked():
+            self.new_seed.continued_run = False
+            self.new_seed.power_index = 0
+            self.ui.lblLogFile.setText("Log File Location")
+            self.ui.leditLogLocation.setReadOnly(False)
+        else:
+            self.new_seed.continued_run = True
+            self.ui.lblLogFile.setText("Select Log File")
+            self.ui.leditLogLocation.setReadOnly(True)
+
 
     def set_start_values(self, pd2_value: int, pd2_freq_value: int):
         self.ui.sboxSeedPD.setValue(pd2_value)
@@ -148,7 +172,6 @@ class Lifetime(QMainWindow):
             self.ui.plot_pd.addItem(self.pdi_pd_histogram)
             self.ui.plot_freq.addItem(self.pdi_pd_freq_histogram)
             self.ui.plot_current.addItem(self.pdi_set_current_histogram)
-
 
     def update_elapsed_times(self):
         with self.seed_lock:
@@ -202,7 +225,6 @@ class Lifetime(QMainWindow):
             self.ui.leditDriverSerial.setText(self.new_seed.driver_serial_number)
             self.ui.btnConnect.setText("Disconnect")
 
-
     def delete_seed(self):
         if self.seeds_to_be_deleted:
             for seed in self.seeds_to_be_deleted:
@@ -210,27 +232,104 @@ class Lifetime(QMainWindow):
                     if seed.driver is None:
                         print(seed)
                         del seed
-                      #  print(seed)
 
             self.seeds_to_be_deleted = [seed for seed in self.seeds_to_be_deleted if seed is not None]
         else:
             if self.delete_seed_timer.isActive():
                 self.delete_seed_timer.stop()
 
+    def browse_for_power_log_file(self, initial_path: str):
+        file_path = askopenfilename(initialdir=initial_path, title="Power Log File")
+        if file_path:
+            self.new_seed.read_power_file(file_path)
+            if not self.new_seed.power_file:
+                dlg = QDialog()
+                dlg_layout = QGridLayout()
+                dlg.setWindowTitle("Error")
+                dlg_layout.addWidget(QLabel("Could not read Power Log File"), 0,
+                                     0)
+                dlg_btn = QDialogButtonBox(QDialogButtonBox.Ok)
+                dlg_btn.accepted.connect(dlg.accept)
+                dlg_layout.addWidget(dlg_btn)
+                dlg.setLayout(dlg_layout)
+                dlg.exec()
+
     def browse_log_file(self):
         r = Tk()
         r.withdraw()
-        log_path = askdirectory(title="Select log file location")
-        if log_path:
-            self.ui.leditLogLocation.setText(log_path)
+        if self.ui.radioNewLog.isChecked():
+            log_path = askdirectory(title="Select log file location")
+            if log_path:
+                self.ui.leditLogLocation.setText(log_path)
+        else:
+            file_path = askopenfilename(title="Select log file")
+            if file_path:
+                self.ui.leditLogLocation.setText(file_path)
+                if self.new_seed.log_file:
+                    dlg = QDialog()
+                    dlg_layout = QGridLayout()
+                    dlg.setWindowTitle("Power File")
+                    dlg_layout.addWidget(QLabel("Does this Seed have a Power Log File?"), 0,
+                                         0)
+                    dlg_btn = QDialogButtonBox(QDialogButtonBox.Yes | QDialogButtonBox.No)
+                    dlg_btn.accepted.connect(lambda: self.browse_for_power_log_file(self.new_seed.log_file_location))
+                    dlg_btn.accepted.connect(dlg.accept)
+                    dlg_btn.rejected.connect(dlg.reject)
+                    dlg_layout.addWidget(dlg_btn)
+                    dlg.setLayout(dlg_layout)
+                    dlg.exec()
+
+    def error_at_reading_log_file(self):
+        self.ui.leditLogLocation.clear()
+        dlg = QDialog()
+        dlg_layout = QGridLayout()
+        dlg.setWindowTitle("Error")
+        dlg_layout.addWidget(QLabel("Could not read Log File"), 0,
+                             0)
+        dlg_btn = QDialogButtonBox(QDialogButtonBox.Ok)
+        dlg_btn.accepted.connect(dlg.accept)
+        dlg_layout.addWidget(dlg_btn)
+        dlg.setLayout(dlg_layout)
+        dlg.exec()
 
     def log_location_changed(self, log_loc: str):
-        if path.isdir(log_loc):
-            self.ui.leditLogLocation.setProperty("valid", True)
-            self.new_seed.log_file_location_changed(log_loc)
+        if self.ui.radioNewLog.isChecked():
+
+            if path.isdir(log_loc):
+                self.ui.leditLogLocation.setProperty("valid", True)
+                self.new_seed.log_file_location_changed(log_loc)
+            else:
+                self.ui.leditLogLocation.setProperty("valid", False)
+                self.new_seed.log_file_location_changed("")
         else:
-            self.ui.leditLogLocation.setProperty("valid", False)
-            self.new_seed.log_file_location_changed("")
+            if path.isfile(log_loc):
+                try:
+                    with open(log_loc, "r") as f:
+                        line = f.readline()
+                        time_line = line[line.find(":")+1:].strip().rstrip()
+                        start_time = datetime.strptime(time_line, "%Y/%m/%d %H:%M:%S").timestamp()
+
+                    self.new_seed.log_start_time = start_time
+                    if self.new_seed.log_file_changed(log_loc):
+
+                        self.ui.leditLogLocation.setProperty("valid", True)
+                    else:
+                        self.ui.leditLogLocation.setProperty("valid", False)
+                        self.error_at_reading_log_file()
+
+
+                except ValueError:
+                    self.ui.leditLogLocation.setProperty("valid", False)
+                    self.new_seed.log_file_changed("")
+                    self.error_at_reading_log_file()
+
+                #except Exception as e:
+                  #  print(e, "töttöröö")
+                  #  self.ui.leditLogLocation.setProperty("valid", False)
+                   # self.new_seed.log_file_changed("")
+            else:
+                self.ui.leditLogLocation.setProperty("valid", False)
+                self.new_seed.log_file_changed("")
 
     def poller_thread(self):
         self.poll_event_loop = asyncio.new_event_loop()
@@ -331,8 +430,8 @@ class Lifetime(QMainWindow):
         seed.reference_power_changed(self.ui.dsboxSeedPower.value())
         seed.reference_wavelength_changed(self.ui.dsboxSeedWavelength.value())
 
-
-        seed.write_log_header()
+        if not seed.continued_run:
+            seed.write_log_header()
         seed.poll_timer.timeout.connect(lambda: asyncio.run_coroutine_threadsafe(seed.get_data(), self.poll_event_loop))
 
         seed.poll_timer.start(int(seed.log_period*1000))
@@ -392,10 +491,18 @@ class Lifetime(QMainWindow):
                                      userData=seed)
 
     def change_seed_data(self):
+        self.ui.dsboxMeasuredPower.setValue(0)
         if self.ui.cboxSeedData.currentIndex() == 0 or np.sum(self.ui.cboxSeedData.currentData().pd_histogram) == 0:
             self.ui.cboxSeedData.setCurrentIndex(0)
             self.ui.btnDisconnect.setDisabled(True)
             self.ui.checkStopWhenReady.setDisabled(True)
+            self.ui.dsboxMeasuredPower.setDisabled(True)
+            self.ui.radioTime.setDisabled(True)
+            self.ui.radioHistogram.setDisabled(True)
+            self.ui.dsboxMeasuredPower.setDisabled(True)
+            self.ui.btnSetMeasuredPower.setDisabled(True)
+
+
             for row in range(self.ui.tableSeedData.rowCount()):
                 for col in range(self.ui.tableSeedData.columnCount()):
                     self.ui.tableSeedData.removeCellWidget(row, col)
@@ -413,6 +520,12 @@ class Lifetime(QMainWindow):
 
         else:
             self.ui.btnDisconnect.setEnabled(True)
+            self.ui.dsboxMeasuredPower.setEnabled(True)
+            self.ui.radioTime.setEnabled(True)
+            self.ui.radioHistogram.setEnabled(True)
+            self.ui.dsboxMeasuredPower.setEnabled(True)
+            self.ui.btnSetMeasuredPower.setEnabled(True)
+
             self.show_data_seed: Seed = self.ui.cboxSeedData.currentData()
             with self.show_data_seed.data_lock:
                 with self.show_data_seed.file_lock:
